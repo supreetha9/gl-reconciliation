@@ -235,3 +235,4 @@ dbt_project/.user.yml
 
 # Streamlit local cache
 .streamlit/cache/
+!streamlit_app/lib/
