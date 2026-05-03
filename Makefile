@@ -23,7 +23,8 @@ SPHINX_BUILD     := $(GL_ENV_PREFIX)/bin/sphinx-build
 SPHINX_AUTOBUILD := $(GL_ENV_PREFIX)/bin/sphinx-autobuild
 
 .PHONY: help _check-env all-env install up down generate load seed run \
-        test lint fmt clean dbt-deps dbt-docs docs docs-build docs-clean
+        test lint fmt clean dbt-deps dbt-docs docs docs-build docs-clean \
+        dagster recon-run recon-list streamlit
 
 # -----------------------------------------------------------------------------
 # Help
@@ -118,6 +119,31 @@ dbt-deps: _check-env ## Install dbt packages (re-fetch dbt-utils, dbt-expectatio
 
 dbt-docs: _check-env ## Generate and serve the dbt lineage docs site (port 8080)
 	cd dbt_project && DBT_PROFILES_DIR=. $(DBT) docs generate && DBT_PROFILES_DIR=. $(DBT) docs serve --port 8080
+
+# -----------------------------------------------------------------------------
+# Orchestration (Phase 3)
+# -----------------------------------------------------------------------------
+
+DAGSTER := $(GL_ENV_PREFIX)/bin/dagster
+
+dagster: _check-env ## Start the Dagster UI on port 3000 (orchestrator + asset graph)
+	@mkdir -p .dagster_home
+	DAGSTER_HOME=$(CURDIR)/.dagster_home $(DAGSTER) dev -m dagster_pipeline.definitions
+
+recon-run: _check-env ## Manually trigger a full recon run (data load + dbt + audit + Slack), no Dagster needed
+	$(PYTHON) -m recon_engine.cli run-recon
+
+recon-list: _check-env ## List the last 10 recon runs from the audit trail
+	$(PYTHON) -m recon_engine.cli list-runs
+
+# -----------------------------------------------------------------------------
+# Streamlit Recon Cockpit (Phase 4)
+# -----------------------------------------------------------------------------
+
+STREAMLIT := $(GL_ENV_PREFIX)/bin/streamlit
+
+streamlit: _check-env ## Start the Streamlit Recon Cockpit on port 8501
+	$(STREAMLIT) run streamlit_app/Home.py --server.port 8501
 
 # -----------------------------------------------------------------------------
 # Project documentation (Sphinx)
