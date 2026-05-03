@@ -15,10 +15,12 @@ Copied from `.env.example` on first checkout. Read by `docker-compose`, the data
 | `POSTGRES_DB`           | `glrecon`  | docker-compose, loader, dbt profile |
 | `POSTGRES_HOST`         | `localhost`| loader, dbt profile |
 | `POSTGRES_PORT`         | `5432`     | docker-compose (host port), loader, dbt profile |
-| `GLRECON_SEED`          | `42`       | data generator |
-| `GLRECON_DAYS`          | `90`       | data generator |
-| `GLRECON_OUTPUT_DIR`    | `./data/raw` | data generator |
-| `SLACK_WEBHOOK_URL`     | (empty)    | (planned) Slack alerter |
+| `GLRECON_SEED`               | `42`         | data generator |
+| `GLRECON_DAYS`               | `90`         | data generator |
+| `GLRECON_OUTPUT_DIR`         | `./data/raw` | data generator |
+| `SLACK_WEBHOOK_URL`          | (empty)      | Slack alerter — when unset the alerter is a no-op |
+| `MATERIALITY_THRESHOLD_USD`  | `10000`      | Slack alerter — minimum break value to surface in the alert body |
+| `DAGSTER_HOME`               | `$CURDIR/.dagster_home` | Dagster local instance state (set by `make dagster`) |
 
 ---
 
@@ -118,3 +120,25 @@ Single-service Postgres 16 with:
 - A persistent named volume `pgdata`
 - Init scripts mounted from `./db/init`
 - A `pg_isready` health check on a 5-second interval
+
+---
+
+## Dagster
+
+The `dagster_pipeline` package reads three resources from environment variables (defined in `dagster_pipeline/resources.py`):
+
+| Resource | Backed by | Env vars |
+|---|---|---|
+| `PostgresResource` | SQLAlchemy `Engine`             | `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_HOST`, `POSTGRES_PORT`, `POSTGRES_DB` |
+| `DbtCliResource`   | `dagster-dbt`'s `DbtProject`    | (uses the project's `profiles.yml`)                                                    |
+| `SlackResource`    | `recon_engine.alerts.SlackAlerter` | `SLACK_WEBHOOK_URL`, `MATERIALITY_THRESHOLD_USD`                                    |
+
+`DAGSTER_HOME` controls where Dagster persists run history and the daemon's state. The `make dagster` target points it at `$CURDIR/.dagster_home` (gitignored) so each developer has an isolated local instance.
+
+The daily schedule (`daily_recon_schedule`) is defined as `STOPPED` by default — flip it to `RUNNING` in the Dagster UI when promoting to a deployment.
+
+---
+
+## Streamlit
+
+The cockpit reads the same `POSTGRES_*` env vars as the rest of the project. There are no Streamlit-specific env vars today; if you add one (for example, an OAuth issuer), wire it through `streamlit_app/lib/db.py` so it stays consistent with the other resources.

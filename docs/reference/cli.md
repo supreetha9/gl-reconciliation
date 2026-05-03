@@ -122,3 +122,49 @@ This bumps the timing-difference injection rate to 10% just for that one run.
 | `0`  | Success.   |
 | `1`  | Generic failure — check the logs. |
 | `2`  | Invalid CLI flags (Typer exit code). |
+
+---
+
+## Recon engine
+
+The `recon_engine.cli` module provides a Dagster-free entry point to the full reconciliation pipeline. Use it from cron, GitHub Actions, or for ad-hoc backfills.
+
+```bash
+python -m recon_engine.cli <command> [options]
+```
+
+### `run-recon`
+
+End-to-end: synthetic data load → `dbt build` → audit-trail write → Slack alert.
+
+```bash
+python -m recon_engine.cli run-recon
+python -m recon_engine.cli run-recon --skip-data-load     # use existing raw.* data
+python -m recon_engine.cli run-recon --skip-dbt           # use existing marts
+python -m recon_engine.cli run-recon --triggered-by manual:vsg
+```
+
+| Flag | Default | Description |
+|---|---|---|
+| `--skip-data-load`  | false           | Skip the synthetic data generator + Postgres load step. |
+| `--skip-dbt`        | false           | Skip the `dbt build`; use the existing marts as-is. |
+| `--triggered-by`    | `manual:cli`    | Recorded verbatim in `audit.recon_runs.triggered_by`. |
+
+Reads `MATERIALITY_THRESHOLD_USD` and `SLACK_WEBHOOK_URL` from the environment (see [Configuration](configuration.md)).
+
+### `list-runs`
+
+Show the most recent rows in `audit.recon_runs`.
+
+```bash
+python -m recon_engine.cli list-runs --limit 20
+```
+
+### `show-run`
+
+Detailed view of a single run plus its per-check results. Accepts a full UUID or an 8-character prefix:
+
+```bash
+python -m recon_engine.cli show-run abc12345
+python -m recon_engine.cli show-run 3b3d2635-8ba2-4a0f-a1a7-801f81e1b8c3
+```

@@ -141,3 +141,80 @@ The dbt project is warehouse-portable by design. You need to:
 4. Re-run `make dbt-deps` to fetch packages compiled for Snowflake.
 
 The recon SQL itself does not need to change — only the storage and ingestion layers.
+
+---
+
+## `make dagster` says `dagster: command not found`
+
+The `[dagster]` extra isn't installed. Run:
+
+```bash
+pip install -e ".[dagster]"
+```
+
+Or do the all-in-one bootstrap that includes Dagster, Streamlit, and the docs toolchain:
+
+```bash
+make all-env
+```
+
+---
+
+## Dagster UI loads but assets show "no manifest"
+
+The `dagster-dbt` integration needs the dbt manifest to exist before it can build the asset graph. Run a dbt build first:
+
+```bash
+make run    # produces dbt_project/target/manifest.json
+make dagster
+```
+
+If the manifest is stale (you've changed dbt models but didn't rebuild), the UI may fail to materialise. Re-run `make run` and refresh the Dagster UI.
+
+---
+
+## My Slack alerts aren't firing
+
+Three things to check, in order:
+
+1. `SLACK_WEBHOOK_URL` is unset — the alerter is intentionally a no-op in that case (it logs a `slack.alert.skipped` warning). Set the env var in `.env` and restart Dagster / your CLI.
+2. The webhook URL is malformed or revoked — Slack will return non-200 and the alerter logs `slack.alert.failed` with the status code.
+3. Every check is below `MATERIALITY_THRESHOLD_USD` (defaults to `$10,000`) — the alert is sent but the body says "No checks above the materiality threshold". Drop the threshold to verify: `MATERIALITY_THRESHOLD_USD=0 make recon-run`.
+
+---
+
+## Streamlit cockpit shows "No recon runs found yet"
+
+The `audit.recon_runs` table is empty. Trigger a run:
+
+```bash
+make recon-run
+```
+
+Then refresh the cockpit. If you see the same message after a successful run, double-check the `POSTGRES_*` env vars in your shell match those in the cockpit's environment.
+
+---
+
+## Streamlit pages show stale data after a new run
+
+The pages are wrapped in `@st.cache_data(ttl=60)`. Wait 60 seconds and refresh, or hit `R` in the Streamlit window to force a rerun and bypass the cache.
+
+---
+
+## Auditor evidence pack download is empty / corrupt
+
+If the workbook downloads but Excel can't open it, the `recon_engine.evidence` builder probably hit an unexpected NULL in one of the marts. Check the Streamlit terminal for a Python traceback — the most common culprit is `recon_transaction_level` being missing for a run that didn't get past the dbt build (status = `ERROR` in `audit.recon_runs`).
+
+Pick a different run from the dropdown. The evidence pack only makes sense for runs whose status is `PASS`, `WARN`, or `FAIL`.
+
+---
+
+## `recon_engine.cli run-recon` exits non-zero
+
+Three usual suspects:
+
+- **Postgres unreachable** — check `make up` and the `POSTGRES_*` env vars.
+- **`dbt build` hard-error (exit code 2)** — the CLI surfaces dbt's exit code. dbt logs everything to stdout; scroll up in your terminal to find the failing model.
+- **Synthetic data generation crashed** — usually a stale dbt schema mismatch after a model change. Run `make seed && make run` once manually to re-bootstrap.
+
+The CLI always writes the failure to `audit.recon_runs` with `status = 'ERROR'` so the failure is captured even when the run aborted mid-flight.
