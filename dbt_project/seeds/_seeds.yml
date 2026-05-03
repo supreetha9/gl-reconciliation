@@ -1,0 +1,42 @@
+version: 2
+
+seeds:
+  - name: tolerance_rules
+    description: |
+      Per-control-account tolerance configuration for the recon engine.
+      Real reconciliations allow for tiny rounding ($0.01) and T+1 timing
+      differences -- never strict equality. The DEFAULT row is the
+      fallback when an account isn't explicitly listed.
+    columns:
+      - name: account_code
+        description: "GL account code, or 'DEFAULT' for fallback."
+        data_tests:
+          - not_null
+          - unique
+      - name: amount_tolerance_usd
+        description: "Max absolute USD delta tolerated between sub-ledger and GL postings."
+        data_tests:
+          - not_null
+      - name: timing_tolerance_days
+        description: "Max business-day lag tolerated between sub-ledger and GL posting dates."
+      - name: fx_tolerance_pct
+        description: "Multiplicative FX-rate tolerance for cross-currency comparisons."
+
+  - name: materiality
+    description: |
+      Per-account materiality thresholds. Breaks below the threshold are
+      logged but not alerted; breaks at/above generate a Slack notification
+      and a Recon Cockpit red flag.
+    columns:
+      - name: account_code
+        data_tests:
+          - not_null
+          - unique
+      - name: materiality_usd
+        data_tests:
+          - not_null
+      - name: severity
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['LOW', 'MEDIUM', 'HIGH']

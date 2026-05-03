@@ -1,0 +1,155 @@
+version: 2
+
+sources:
+  - name: raw
+    description: |
+      Bronze layer. Untouched landings from the AP, AR, Inventory, and GL
+      source systems. In production these would be loaded by Fivetran /
+      Airbyte / a custom ingestor; in this project they are loaded by the
+      `data_generator` Python pipeline.
+    schema: raw
+    loader: data_generator
+    loaded_at_field: ingested_at
+
+    freshness:
+      warn_after: { count: 26, period: hour }
+      error_after: { count: 30, period: hour }
+
+    tables:
+      # ----- Reference / Dimensions -------------------------------------
+      - name: dim_entity
+        description: "Legal entities. One row per ledger-bearing entity."
+        columns:
+          - name: entity_id
+            data_tests: [not_null, unique]
+          - name: entity_code
+            data_tests: [not_null, unique]
+          - name: functional_currency
+            data_tests:
+              - not_null
+              - accepted_values: { values: ['USD', 'EUR', 'INR'] }
+
+      - name: dim_account
+        description: "Chart of Accounts. The single source of truth for account metadata, hierarchy, and control-account flags."
+        columns:
+          - name: account_id
+            data_tests: [not_null, unique]
+          - name: account_code
+            data_tests: [not_null, unique]
+          - name: account_type
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE']
+
+      - name: fx_rate
+        description: "Daily FX rates to USD (the reporting currency). Used by the FX revaluation recon."
+        columns:
+          - name: rate_date
+            data_tests: [not_null]
+          - name: from_currency
+            data_tests: [not_null]
+          - name: to_currency
+            data_tests: [not_null]
+          - name: rate
+            data_tests: [not_null]
+
+      # ----- Accounts Payable -------------------------------------------
+      - name: ap_invoices
+        description: "AP sub-ledger - vendor invoices. One row per invoice."
+        columns:
+          - name: invoice_id
+            data_tests: [not_null, unique]
+          - name: entity_id
+            data_tests:
+              - not_null
+              - relationships:
+                  to: source('raw', 'dim_entity')
+                  field: entity_id
+          - name: status
+            data_tests:
+              - accepted_values: { values: ['OPEN','PAID','VOID','HOLD'] }
+
+      - name: ap_payments
+        description: "AP sub-ledger - payments against vendor invoices."
+        columns:
+          - name: payment_id
+            data_tests: [not_null, unique]
+          - name: entity_id
+            data_tests:
+              - relationships:
+                  to: source('raw', 'dim_entity')
+                  field: entity_id
+
+      - name: ap_accruals
+        description: "AP sub-ledger - month-end accruals (reverse the following period)."
+        columns:
+          - name: accrual_id
+            data_tests: [not_null, unique]
+
+      # ----- Accounts Receivable ----------------------------------------
+      - name: ar_invoices
+        description: "AR sub-ledger - customer invoices."
+        columns:
+          - name: invoice_id
+            data_tests: [not_null, unique]
+          - name: entity_id
+            data_tests:
+              - relationships:
+                  to: source('raw', 'dim_entity')
+                  field: entity_id
+
+      - name: ar_receipts
+        description: "AR sub-ledger - cash receipts against customer invoices."
+        columns:
+          - name: receipt_id
+            data_tests: [not_null, unique]
+
+      - name: ar_credit_memos
+        description: "AR sub-ledger - returns, price adjustments, and write-offs."
+        columns:
+          - name: memo_id
+            data_tests: [not_null, unique]
+          - name: reason
+            data_tests:
+              - accepted_values: { values: ['RETURN','PRICE_ADJ','WRITE_OFF'] }
+
+      # ----- Inventory ---------------------------------------------------
+      - name: inv_transactions
+        description: "Inventory sub-ledger - receipts, COGS postings, and adjustments."
+        columns:
+          - name: txn_id
+            data_tests: [not_null, unique]
+          - name: txn_type
+            data_tests:
+              - not_null
+              - accepted_values: { values: ['RECEIPT','COGS','ADJUSTMENT'] }
+
+      # ----- General Ledger ---------------------------------------------
+      - name: gl_journal
+        description: |
+          The General Ledger. One row per journal LINE. A journal entry
+          is the set of lines sharing a journal_id and is required to
+          sum to zero in USD (debits == credits). This invariant is the
+          most fundamental check the recon engine validates.
+        freshness:
+          warn_after: { count: 12, period: hour }
+          error_after: { count: 24, period: hour }
+        columns:
+          - name: journal_id
+            data_tests: [not_null]
+          - name: source_system
+            data_tests:
+              - not_null
+              - accepted_values:
+                  values: ['AP','AR','INV','MANUAL','FX_REVAL']
+          - name: debit_usd
+            data_tests:
+              - not_null
+              - dbt_utils.expression_is_true:
+                  expression: ">= 0"
+          - name: credit_usd
+            data_tests:
+              - not_null
+              - dbt_utils.expression_is_true:
+                  expression: ">= 0"

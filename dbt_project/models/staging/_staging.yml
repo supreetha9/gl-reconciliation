@@ -1,0 +1,95 @@
+version: 2
+
+models:
+  - name: stg_dim_entity
+    description: "Cleaned, conformed legal entities."
+    columns:
+      - name: entity_id
+        data_tests: [not_null, unique]
+      - name: functional_currency
+        data_tests:
+          - accepted_values: { values: ['USD','EUR','INR'] }
+
+  - name: stg_dim_account
+    description: "Cleaned chart of accounts. Snapshot lives separately under snapshots/."
+    columns:
+      - name: account_code
+        data_tests: [not_null, unique]
+      - name: account_type
+        data_tests:
+          - accepted_values:
+              values: ['ASSET','LIABILITY','EQUITY','REVENUE','EXPENSE']
+
+  - name: stg_fx_rate
+    description: "Daily FX rates to USD."
+    columns:
+      - name: rate
+        data_tests:
+          - not_null
+          - dbt_utils.expression_is_true:
+              expression: "> 0"
+
+  - name: stg_ap_invoices
+    description: "Vendor invoices (AP)."
+    columns:
+      - name: invoice_id
+        data_tests: [not_null, unique]
+      - name: amount_usd
+        data_tests:
+          - dbt_utils.expression_is_true: { expression: ">= 0" }
+
+  - name: stg_ap_payments
+    description: "Payments against vendor invoices."
+    columns:
+      - name: payment_id
+        data_tests: [not_null, unique]
+
+  - name: stg_ap_accruals
+    description: "AP month-end accruals."
+    columns:
+      - name: accrual_id
+        data_tests: [not_null, unique]
+
+  - name: stg_ar_invoices
+    description: "Customer invoices (AR)."
+    columns:
+      - name: invoice_id
+        data_tests: [not_null, unique]
+      - name: amount_usd
+        data_tests:
+          - dbt_utils.expression_is_true: { expression: ">= 0" }
+
+  - name: stg_ar_receipts
+    description: "Cash receipts against AR invoices."
+    columns:
+      - name: receipt_id
+        data_tests: [not_null, unique]
+
+  - name: stg_ar_credit_memos
+    description: "AR credit memos: returns, price adjustments, write-offs."
+    columns:
+      - name: memo_id
+        data_tests: [not_null, unique]
+
+  - name: stg_inv_transactions
+    description: "Inventory postings: receipts, COGS, adjustments."
+    columns:
+      - name: txn_id
+        data_tests: [not_null, unique]
+
+  - name: stg_gl_journal
+    description: |
+      General Ledger lines, deduplicated on (journal_id, journal_line_id)
+      keeping the latest ingestion. Adds `net_amount_usd = debit - credit`
+      for downstream convenience.
+    columns:
+      - name: journal_id
+        data_tests: [not_null]
+      - name: net_amount_usd
+        data_tests: [not_null]
+      - name: source_system
+        data_tests:
+          - accepted_values: { values: ['AP','AR','INV','MANUAL','FX_REVAL'] }
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [journal_id, journal_line_id]
