@@ -32,6 +32,15 @@ dbt = [
     "dbt-core>=1.8,<1.10",
     "dbt-postgres>=1.8,<1.10",
 ]
+docs = [
+    "sphinx>=7.3",
+    "furo>=2024.5",
+    "myst-parser>=3.0",
+    "sphinx-copybutton>=0.5",
+    "sphinx-autobuild>=2024.4",
+    "sphinxcontrib-mermaid>=0.9",
+    "linkify-it-py>=2.0",
+]
 
 [project.scripts]
 glrecon-data = "data_generator.cli:app"

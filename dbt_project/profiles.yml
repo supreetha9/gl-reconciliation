@@ -1,0 +1,14 @@
+glrecon:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('POSTGRES_HOST', 'localhost') }}"
+      port: "{{ env_var('POSTGRES_PORT', '5432') | int }}"
+      user: "{{ env_var('POSTGRES_USER', 'glrecon') }}"
+      password: "{{ env_var('POSTGRES_PASSWORD', 'glrecon') }}"
+      dbname: "{{ env_var('POSTGRES_DB', 'glrecon') }}"
+      schema: glrecon
+      threads: 4
+      keepalives_idle: 0
+      sslmode: prefer

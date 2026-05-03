@@ -1,0 +1,55 @@
+name: glrecon
+version: 0.1.0
+config-version: 2
+profile: glrecon
+
+require-dbt-version: [">=1.8.0", "<2.0.0"]
+
+model-paths: ["models"]
+seed-paths: ["seeds"]
+test-paths: ["tests"]
+snapshot-paths: ["snapshots"]
+macro-paths: ["macros"]
+analysis-paths: ["analyses"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages", "logs"]
+
+vars:
+  default_materiality_usd: 1000
+  amount_tolerance_usd: 0.05
+  timing_tolerance_days: 1
+  fx_tolerance_pct: 0.001
+
+models:
+  glrecon:
+    +persist_docs:
+      relation: true
+      columns: true
+    staging:
+      +materialized: view
+      +schema: staging
+    intermediate:
+      +materialized: view
+      +schema: intermediate
+    marts:
+      recon:
+        +materialized: table
+        +schema: marts
+
+seeds:
+  glrecon:
+    +schema: seeds
+    tolerance_rules:
+      +column_types:
+        amount_tolerance_usd: numeric(18,4)
+        timing_tolerance_days: integer
+        fx_tolerance_pct: numeric(18,6)
+    materiality:
+      +column_types:
+        materiality_usd: numeric(18,2)
+
+snapshots:
+  glrecon:
+    +target_schema: snapshots
+    +strategy: check
+    +invalidate_hard_deletes: true
