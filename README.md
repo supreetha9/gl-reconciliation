@@ -89,21 +89,23 @@ The supporting stack is deliberately minimal. **The interview is about SQL, dbt,
 git clone <this repo> && cd gl-reconciliation
 cp .env.example .env
 pyenv virtualenv 3.13.3 gl_env && pyenv local gl_env   # one-time
-make install               # pip install -e ".[dev,dbt]" inside gl_env
+make all-env               # install all Python extras + dbt packages
 make up                    # start Postgres in Docker
 make seed                  # generate synthetic data + load into Postgres
-make dbt-deps              # one-time: install dbt packages
 make run                   # dbt build (seeds + snapshot + 9 recon marts + tests)
 ```
 
-Then explore the recon results:
+Then explore the project:
 
 ```bash
 python -m data_generator.cli summary    # row counts in raw.*
-make docs                               # browse the dbt lineage at http://localhost:8080
+make docs                               # full project documentation (Sphinx) at http://localhost:8000
+make dbt-docs                           # dbt lineage + column-level docs at http://localhost:8080
 ```
 
 You should see ~50K rows across the `raw.*` tables and a `dbt build` summary of `PASS=208 ERROR=0` with a categorized breakdown of the injected breaks in `glrecon_marts.recon_transaction_level`.
+
+Detailed setup, architecture, data model, and reconciliation methodology are all in the Sphinx documentation (`make docs`).
 
 ---
 
@@ -119,7 +121,7 @@ You should see ~50K rows across the `raw.*` tables and a `dbt build` summary of 
 
 ### Reconciliation engine
 
-A dbt project (dbt-core 1.11 on `dbt-postgres`) implementing reconciliation-as-code, with [`dbt-utils`](https://hub.getdbt.com/dbt-labs/dbt_utils/), [`dbt-expectations`](https://hub.getdbt.com/calogica/dbt_expectations/), and [`dbt_project_evaluator`](https://hub.getdbt.com/dbt-labs/dbt_project_evaluator/) as dependencies. Project lives at [`dbt_project/`](dbt_project/).
+A dbt project (dbt-core 1.11 on `dbt-postgres`) implementing reconciliation-as-code, with [`dbt-utils`](https://hub.getdbt.com/dbt-labs/dbt_utils/), [`dbt-expectations`](https://hub.getdbt.com/metaplane/dbt_expectations/), and [`dbt_project_evaluator`](https://hub.getdbt.com/dbt-labs/dbt_project_evaluator/) as dependencies. Project lives at [`dbt_project/`](dbt_project/).
 
 - **11 staging models** mirror the bronze tables one-to-one. `stg_gl_journal` demonstrates the `ROW_NUMBER`-based dedup pattern (the dialect-portable equivalent of `QUALIFY`). See [`stg_gl_journal.sql`](dbt_project/models/staging/stg_gl_journal.sql).
 - **4 intermediate models** carry the heavy lifting:
@@ -187,6 +189,7 @@ gl-reconciliation/
 │   │   ├── intermediate/       # 4 int_ models including the recursive-CTE COA hierarchy
 │   │   └── marts/recon/        # 9 recon marts with model contracts, unit tests, exposures
 │   └── tests/                  # singular SQL tests using the assert_balanced macro
+├── docs/                       # Sphinx documentation (built and served by `make docs`)
 └── tests/                      # pytest smoke tests on the data generator
 ```
 
