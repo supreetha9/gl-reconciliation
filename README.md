@@ -73,10 +73,10 @@ flowchart LR
 | **Core: Storage** | PostgreSQL 16 | Same SQL surface as Snowflake/Redshift. Schemas mirror a medallion warehouse (`raw`, `staging`, `intermediate`, `marts`, `audit`). |
 | **Core: Transformation** | dbt-core 1.8+ | The 2026 industry standard for analytics-engineering. Models, tests, snapshots, contracts, unit tests. |
 | **Core: Recon engine** | Python 3.13 (typed, pydantic v2, structlog) | Tolerance-based matching, break categorization, reusable across recons. |
-| Supporting: Orchestration | Dagster | Daily schedule + asset checks. (Phase 3) |
-| Supporting: Validation | Great Expectations | Source-layer expectation suites. (Phase 2) |
-| Supporting: UI | Streamlit | 4-page Recon Cockpit. (Phase 4) |
-| Supporting: Alerting | Slack webhook | Materiality-thresholded daily digest. (Phase 3) |
+| Supporting: Orchestration | Dagster | Daily schedule and asset checks. |
+| Supporting: Validation | Great Expectations | Source-layer expectation suites. |
+| Supporting: UI | Streamlit | Multi-page Recon Cockpit. |
+| Supporting: Alerting | Slack webhook | Materiality-thresholded daily digest. |
 | Supporting: Containerization | Docker | One `docker-compose.yml` for Postgres. |
 
 The supporting stack is deliberately minimal. **The interview is about SQL, dbt, and Python.**
@@ -89,43 +89,66 @@ The supporting stack is deliberately minimal. **The interview is about SQL, dbt,
 git clone <this repo> && cd gl-reconciliation
 cp .env.example .env
 pyenv virtualenv 3.13.3 gl_env && pyenv local gl_env   # one-time
-make install               # pip install -e ".[dev]" inside gl_env
+make install               # pip install -e ".[dev,dbt]" inside gl_env
 make up                    # start Postgres in Docker
 make seed                  # generate synthetic data + load into Postgres
+make dbt-deps              # one-time: install dbt packages
+make run                   # dbt build (seeds + snapshot + 9 recon marts + tests)
 ```
 
-Then verify:
+Then explore the recon results:
 
 ```bash
-python -m data_generator.cli summary
+python -m data_generator.cli summary    # row counts in raw.*
+make docs                               # browse the dbt lineage at http://localhost:8080
 ```
 
-You should see ~50K rows across the `raw.*` tables and a row-count breakdown of the injected breaks by class.
+You should see ~50K rows across the `raw.*` tables and a `dbt build` summary of `PASS=208 ERROR=0` with a categorized breakdown of the injected breaks in `glrecon_marts.recon_transaction_level`.
 
 ---
 
 ## What's inside
 
-### Phase 1 — Data foundation (this commit)
+### Data foundation
 
-- **Postgres bronze layer** with FK-constrained AP/AR/Inventory/GL tables and a SOX-style `audit.recon_runs` table. See [`db/init/`](db/init/).
-- **Synthetic data generator** in Python (Faker, numpy, pandas) producing 90 days of multi-entity, multi-currency postings. Deterministic via `--seed`. See [`data_generator/`](data_generator/).
-- **Realistic break injection** across five classes (timing, amount, missing posting, unauthorized JE, FX rounding) with a side-channel `_breaks_log.csv` so tests can assert on exactly what was perturbed. See [`data_generator/inject_breaks.py`](data_generator/inject_breaks.py).
-- **Typer CLI** (`generate`, `load`, `seed`, `summary`) with rich-formatted output and structlog JSON logging.
-- **Smoke tests** asserting double-entry balance on the clean GL feed and reproducibility of the injected breaks. See [`tests/`](tests/).
+- **Postgres bronze layer** with FK-constrained AP, AR, Inventory, and GL tables, plus an append-only `audit.recon_runs` table for SOX-style evidence. See [`db/init/`](db/init/).
+- **Synthetic data generator** in Python (Faker, numpy, pandas) producing 90 days of multi-entity, multi-currency postings. Fully deterministic via `--seed`. See [`data_generator/`](data_generator/).
+- **Realistic break injection** across five classes — timing, amount, missing posting, unauthorized JE, and FX rounding — with a side-channel `_breaks_log.csv` so tests can assert on exactly what was perturbed. See [`data_generator/inject_breaks.py`](data_generator/inject_breaks.py).
+- **Typer CLI** (`generate`, `load`, `seed`, `summary`) with rich-formatted output and structured JSON logging via `structlog`.
+- **Smoke test suite** asserting double-entry balance on the clean GL feed and reproducibility of the injected breaks. See [`tests/`](tests/).
 
-### Phase 2 — dbt recon engine (next)
+### Reconciliation engine
 
-8 reconciliation checks implemented as dbt models:
-control-account balance, roll-forward proof, transaction-level matching with tolerance, variance analysis, aging, FX revaluation, suspense monitor, manual-JE flag.
+A dbt project (dbt-core 1.11 on `dbt-postgres`) implementing reconciliation-as-code, with [`dbt-utils`](https://hub.getdbt.com/dbt-labs/dbt_utils/), [`dbt-expectations`](https://hub.getdbt.com/calogica/dbt_expectations/), and [`dbt_project_evaluator`](https://hub.getdbt.com/dbt-labs/dbt_project_evaluator/) as dependencies. Project lives at [`dbt_project/`](dbt_project/).
 
-### Phase 3 — Orchestration + audit (next)
+- **11 staging models** mirror the bronze tables one-to-one. `stg_gl_journal` demonstrates the `ROW_NUMBER`-based dedup pattern (the dialect-portable equivalent of `QUALIFY`). See [`stg_gl_journal.sql`](dbt_project/models/staging/stg_gl_journal.sql).
+- **4 intermediate models** carry the heavy lifting:
+  - `int_subledger_postings` — UNION-ALL translation of every AP / AR / Inventory event into the GL-line shape so apples-to-apples matching works.
+  - `int_subledger_trial_balance`, `int_gl_trial_balance` — running balances via window functions over the daily net.
+  - `int_dim_account_hierarchy` — the chart of accounts walked with a recursive CTE.
+- **9 reconciliation marts** under [`models/marts/recon/`](dbt_project/models/marts/recon/):
+  - `recon_control_account` — sub-ledger vs GL trial balance per `(entity, account, posting_date)`. Enforced model contract.
+  - `recon_transaction_level` — anti-join matching engine with tolerance. Incremental, `merge` strategy, enforced model contract.
+  - `recon_roll_forward` — opening + activity = closing in both ledgers, independently.
+  - `recon_variance_analysis` — material breaks ranked by entity, account, and currency.
+  - `recon_aging` — 0-1d / 2-7d / 8-30d / 30+d buckets with triage priority.
+  - `recon_fx_revaluation` — period-end FX translation check.
+  - `recon_suspense_monitor` — non-zero balances in the `9999` suspense series.
+  - `recon_manual_je_flag` — manual journal entries posted to control accounts (audit risk).
+  - `recon_summary` — pass / fail / warn scorecard consumed by the cockpit.
+- **3 reusable macros** — `assert_balanced`, `get_tolerance`, `categorize_break` — used across 5+ singular tests.
+- **SCD2 snapshot** on the chart of accounts (`strategy: check`).
+- **2 declarative seeds** — `tolerance_rules.csv` and `materiality.csv` — the recon-as-code configuration surface.
+- **3 singular SQL tests** plus **2 dbt unit tests** on `recon_control_account` (the dbt 1.8+ unit-testing feature).
+- **2 exposures** linking the recon marts to the Streamlit cockpit and the auditor evidence pack so `dbt docs` shows full downstream lineage.
 
-Dagster daily schedule, asset checks, Slack alerts, and append-only `audit.recon_runs` evidence.
+End-to-end status on a 30-day, ~100K-line GL load: `dbt build` reports `PASS=208, ERROR=0`.
 
-### Phase 4 — Streamlit + delivery (next)
+### Planned
 
-4-page Recon Cockpit (Scorecard, Break Detail, Aging, Auditor Evidence) and a polished demo for the portfolio.
+- Orchestration with Dagster (software-defined assets, daily schedule, asset checks) and Slack alerts above the materiality threshold.
+- Append-only `audit.recon_runs` evidence capturing run id, git sha, dbt manifest hash, and per-check outcomes.
+- Streamlit Recon Cockpit with Scorecard, Break Detail, Aging, and Auditor Evidence pages.
 
 ---
 
@@ -133,35 +156,51 @@ Dagster daily schedule, asset checks, Slack alerts, and append-only `audit.recon
 
 ```
 gl-reconciliation/
-├── docker-compose.yml          # Postgres only
-├── pyproject.toml              # uv-managed Python project
-├── Makefile                    # 3-command quickstart
-├── db/init/                    # SQL bootstrap (auto-run by Postgres)
+├── docker-compose.yml          # Postgres
+├── pyproject.toml              # Python project metadata and dependencies
+├── Makefile                    # quickstart targets
+├── db/init/                    # SQL bootstrap, auto-run by Postgres on first start
 │   ├── 01_schemas.sql
 │   ├── 02_dimensions.sql
 │   ├── 03_subledgers.sql
 │   ├── 04_gl.sql
 │   └── 05_audit.sql
-├── data_generator/             # Phase 1: synthetic data + loader
+├── data_generator/             # synthetic data pipeline + Postgres loader
 │   ├── config.py               # pydantic-settings
-│   ├── reference.py            # COA + entities + FX rates
+│   ├── reference.py            # chart of accounts, entities, FX rates
 │   ├── subledgers.py           # AP / AR / Inventory generators
 │   ├── gl.py                   # double-entry GL generator
-│   ├── inject_breaks.py        # 5 break classes
+│   ├── inject_breaks.py        # five break classes
 │   ├── pipeline.py             # end-to-end orchestrator
 │   ├── loader.py               # COPY-based Postgres loader
 │   └── cli.py                  # Typer CLI
-└── tests/                      # pytest smoke tests
+├── dbt_project/                # reconciliation engine
+│   ├── dbt_project.yml
+│   ├── packages.yml
+│   ├── profiles.yml            # env-driven Postgres connection
+│   ├── seeds/                  # tolerance_rules.csv, materiality.csv
+│   ├── snapshots/              # SCD2 on chart of accounts
+│   ├── macros/                 # assert_balanced, get_tolerance, categorize_break
+│   ├── models/
+│   │   ├── _sources.yml        # 11 raw tables, freshness on gl_journal
+│   │   ├── staging/            # one stg_ model per source table
+│   │   ├── intermediate/       # 4 int_ models including the recursive-CTE COA hierarchy
+│   │   └── marts/recon/        # 9 recon marts with model contracts, unit tests, exposures
+│   └── tests/                  # singular SQL tests using the assert_balanced macro
+└── tests/                      # pytest smoke tests on the data generator
 ```
 
 ---
 
 ## Roadmap
 
-- Phase 2: dbt project with 8 recon checks, snapshots, model contracts, dbt unit tests, hosted `dbt docs`.
-- Phase 3: Dagster orchestration, Slack alerting, append-only audit trail.
-- Phase 4: Streamlit Recon Cockpit + auditor evidence pack export + demo GIF.
-- Stretch: intercompany eliminations; Polars-based matching engine for >1M rows; Snowflake adapter swap.
+- Dagster orchestration with software-defined assets, daily schedules, and asset checks.
+- Slack alerting above the materiality threshold and an append-only audit trail capturing run id, git sha, dbt manifest hash, and per-check evidence.
+- Streamlit Recon Cockpit (Scorecard, Break Detail, Aging, Auditor Evidence) with PDF / Excel evidence-pack export.
+- Hosted `dbt docs` site on GitHub Pages for the lineage graph.
+- Intercompany eliminations.
+- Polars-based matching engine for datasets above one million rows.
+- Snowflake adapter swap (the dbt and Dagster code are warehouse-agnostic by design).
 
 ---
 
