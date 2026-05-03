@@ -17,6 +17,8 @@ This documentation is the canonical reference for engineers and analysts working
 | **Core stack**   | PostgreSQL {{ postgres_version }}, dbt-core {{ dbt_version }}, Python {{ python_version }}                                                     |
 | **Data volume**  | ~50K sub-ledger postings + ~100K GL journal lines per 30-day window                                                                            |
 | **Recon checks** | 9 dbt-modelled checks: control account, transaction-level matching, roll-forward, variance, aging, FX revaluation, suspense, manual-JE, summary |
+| **Orchestration**| Dagster (software-defined assets, daily 08:00 PT schedule, freshness asset checks)                                                              |
+| **Cockpit**      | Streamlit 4-page app: Recon Scorecard, Break Detail, Aging Report, Auditor Evidence (Excel pack export)                                          |
 | **Repository**   | [github.com/supreetha9/gl-reconciliation](https://github.com/supreetha9/gl-reconciliation)                                                      |
 
 ---
@@ -48,6 +50,8 @@ reconciliation_engine
 
 data_generator
 dbt_project
+orchestration
+recon_cockpit
 ```
 
 ```{toctree}
