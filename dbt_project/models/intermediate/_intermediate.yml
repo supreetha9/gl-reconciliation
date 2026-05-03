@@ -1,0 +1,49 @@
+version: 2
+
+models:
+  - name: int_subledger_postings
+    description: |
+      Every sub-ledger row translated into the same GL-line shape so the
+      recon engine can compare apples to apples. Two rows per business
+      event (debit + credit), preserving `source_doc_id` for transaction-
+      level matching.
+    columns:
+      - name: source_system
+        data_tests:
+          - accepted_values: { values: ['AP','AR','INV'] }
+      - name: source_doc_id
+        data_tests: [not_null]
+      - name: posting_date
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.expression_is_true:
+          expression: "(debit_usd > 0 and credit_usd = 0) or (debit_usd = 0 and credit_usd > 0) or (debit_usd = 0 and credit_usd = 0)"
+          config:
+            error_if: ">100"
+
+  - name: int_subledger_trial_balance
+    description: "Daily sub-ledger trial balance with running balance via window function."
+    columns:
+      - name: posting_date
+        data_tests: [not_null]
+      - name: running_balance_usd
+        data_tests: [not_null]
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [entity_id, account_code, posting_date]
+
+  - name: int_gl_trial_balance
+    description: "Daily GL trial balance with running balance via window function. Symmetric to int_subledger_trial_balance."
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [entity_id, account_code, posting_date]
+
+  - name: int_dim_account_hierarchy
+    description: |
+      Chart of accounts walked via a recursive CTE. Adds level, root_code,
+      and a '/'-delimited path for downstream pivots.
+    columns:
+      - name: account_code
+        data_tests: [not_null, unique]
+      - name: level
+        data_tests: [not_null]
