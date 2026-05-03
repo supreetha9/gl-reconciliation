@@ -1,0 +1,263 @@
+version: 2
+
+models:
+  # ============================================================================
+  # recon_control_account -- enforces a model contract (dbt 1.5+ feature)
+  # ============================================================================
+  - name: recon_control_account
+    description: |
+      THE core check. Sub-ledger ending balance vs GL control-account
+      balance per (entity, account, posting_date) with tolerance.
+      A break here means the sub-ledger and GL disagree about
+      outstanding payables / receivables / inventory on a given day.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: entity_id
+        data_type: integer
+        constraints: [{ type: not_null }]
+      - name: account_code
+        data_type: text
+        constraints: [{ type: not_null }]
+      - name: posting_date
+        data_type: date
+        constraints: [{ type: not_null }]
+      - name: sl_daily_net_usd
+        data_type: numeric
+      - name: gl_daily_net_usd
+        data_type: numeric
+      - name: sl_balance_usd
+        data_type: numeric
+      - name: gl_balance_usd
+        data_type: numeric
+      - name: variance_usd
+        data_type: numeric
+      - name: amount_tolerance_usd
+        data_type: numeric
+      - name: materiality_usd
+        data_type: numeric
+      - name: severity
+        data_type: text
+      - name: status
+        data_type: text
+        constraints: [{ type: not_null }]
+        data_tests:
+          - accepted_values: { values: ['PASS','WARN','FAIL'] }
+    data_tests:
+      - dbt_utils.unique_combination_of_columns:
+          combination_of_columns: [entity_id, account_code, posting_date]
+
+  # ============================================================================
+  # recon_transaction_level -- the matching engine
+  # ============================================================================
+  - name: recon_transaction_level
+    description: |
+      Transaction-level matching engine. Anti-joins sub-ledger postings
+      against GL postings on (source_doc_id, account, direction) with
+      tolerance. Output drives the Break Detail page in the Streamlit
+      Recon Cockpit.
+    config:
+      contract:
+        enforced: true
+    columns:
+      - name: source_system
+        data_type: text
+        constraints: [{ type: not_null }]
+      - name: source_doc_id
+        data_type: text
+      - name: account_code
+        data_type: text
+        constraints: [{ type: not_null }]
+      - name: entity_id
+        data_type: integer
+      - name: business_date
+        data_type: date
+      - name: currency
+        data_type: bpchar
+      - name: posting_role
+        data_type: text
+      - name: sl_posting_date
+        data_type: date
+      - name: gl_posting_date
+        data_type: date
+      - name: sl_amount_usd
+        data_type: numeric
+      - name: gl_amount_usd
+        data_type: numeric
+      - name: amount_delta_usd
+        data_type: numeric
+      - name: posting_lag_days
+        data_type: integer
+      - name: journal_id
+        data_type: text
+      - name: journal_line_id
+        data_type: integer
+      - name: amount_tolerance_usd
+        data_type: numeric
+      - name: timing_tolerance_days
+        data_type: integer
+      - name: break_class
+        data_type: text
+        data_tests:
+          - accepted_values:
+              values: ['MISSING_GL_POSTING','MISSING_SL_POSTING','AMOUNT_MISMATCH','TIMING_DIFF','FX_ROUNDING','UNKNOWN']
+      - name: status
+        data_type: text
+        data_tests:
+          - accepted_values: { values: ['MATCHED','BREAK'] }
+      - name: recon_at
+        data_type: timestamp with time zone
+
+  # ============================================================================
+  # The remaining 6 marts -- descriptions + light tests, no contract enforcement
+  # (so we keep one example of contract enforcement and the rest stay flexible).
+  # ============================================================================
+  - name: recon_roll_forward
+    description: "Validates opening + activity = closing in both ledgers, independently."
+    columns:
+      - name: ledger
+        data_tests:
+          - accepted_values: { values: ['SUBLEDGER','GL'] }
+      - name: status
+        data_tests:
+          - accepted_values: { values: ['PASS','FAIL'] }
+
+  - name: recon_summary
+    description: "Pass/fail/warn counts and total break value per check. Drives the Recon Scorecard."
+    columns:
+      - name: check_name
+        data_tests:
+          - not_null
+          - accepted_values:
+              values: ['control_account','transaction_level','roll_forward']
+
+  - name: recon_variance_analysis
+    description: "Material variances from the control-account check, sliced by entity/account/currency."
+    columns:
+      - name: status
+        data_tests:
+          - accepted_values: { values: ['WARN','FAIL'] }
+
+  - name: recon_aging
+    description: "Unmatched items bucketed by age. Drives the controller's daily triage."
+    columns:
+      - name: age_bucket
+        data_tests:
+          - accepted_values: { values: ['0-1d','2-7d','8-30d','30+d'] }
+      - name: triage_priority
+        data_tests:
+          - accepted_values: { values: ['LOW','MEDIUM','HIGH','CRITICAL'] }
+
+  - name: recon_fx_revaluation
+    description: "Period-end FX translation reconciliation."
+    columns:
+      - name: status
+        data_tests:
+          - accepted_values: { values: ['PASS','WARN','FAIL'] }
+
+  - name: recon_suspense_monitor
+    description: "Anything sitting in the 9999 suspense series. Should always net to zero."
+    columns:
+      - name: status
+        data_tests:
+          - accepted_values: { values: ['PASS','FAIL'] }
+
+  - name: recon_manual_je_flag
+    description: "Manual JEs touching control accounts. SOX red flag."
+    columns:
+      - name: status
+        data_tests:
+          - accepted_values: { values: ['PASS','FAIL'] }
+
+# ==============================================================================
+# dbt unit tests (dbt 1.8+)
+# Mock-input tests for the matching engine. These run without touching
+# Postgres and prove the SQL logic in isolation.
+# ==============================================================================
+unit_tests:
+  - name: control_account_passes_when_balances_tie
+    description: "Sub-ledger balance equal to GL balance (within tolerance) -> PASS."
+    model: recon_control_account
+    given:
+      - input: ref('int_subledger_trial_balance')
+        rows:
+          - { entity_id: 1, account_code: '2000', posting_date: '2026-04-01', daily_debits_usd: 0, daily_credits_usd: 100, daily_net_usd: 100, running_balance_usd: 100 }
+      - input: ref('int_gl_trial_balance')
+        rows:
+          - { entity_id: 1, account_code: '2000', posting_date: '2026-04-01', daily_debits_usd: 0, daily_credits_usd: 100, daily_net_usd: 100, running_balance_usd: 100 }
+      - input: ref('stg_dim_account')
+        rows:
+          - { account_id: 1, account_code: '2000', account_name: 'AP', account_type: 'LIABILITY', parent_account_code: null, is_control_account: true, subledger_source: 'AP', effective_from: '2026-01-01', effective_to: null, ingested_at: '2026-04-01' }
+      - input: ref('tolerance_rules')
+        rows:
+          - { account_code: '2000',     amount_tolerance_usd: 0.05, timing_tolerance_days: 1, fx_tolerance_pct: 0.001 }
+          - { account_code: 'DEFAULT',  amount_tolerance_usd: 0.01, timing_tolerance_days: 0, fx_tolerance_pct: 0 }
+      - input: ref('materiality')
+        rows:
+          - { account_code: '2000',    materiality_usd: 500,  severity: 'HIGH' }
+          - { account_code: 'DEFAULT', materiality_usd: 1000, severity: 'LOW'  }
+    expect:
+      rows:
+        - { entity_id: 1, account_code: '2000', posting_date: '2026-04-01', variance_usd: 0, status: 'PASS' }
+
+  - name: control_account_fails_when_material_break
+    description: "Sub-ledger ahead of GL by more than materiality -> FAIL."
+    model: recon_control_account
+    given:
+      - input: ref('int_subledger_trial_balance')
+        rows:
+          - { entity_id: 1, account_code: '2000', posting_date: '2026-04-01', daily_debits_usd: 0, daily_credits_usd: 1000, daily_net_usd: 1000, running_balance_usd: 1000 }
+      - input: ref('int_gl_trial_balance')
+        rows:
+          - { entity_id: 1, account_code: '2000', posting_date: '2026-04-01', daily_debits_usd: 0, daily_credits_usd: 0,    daily_net_usd: 0,    running_balance_usd: 0    }
+      - input: ref('stg_dim_account')
+        rows:
+          - { account_id: 1, account_code: '2000', account_name: 'AP', account_type: 'LIABILITY', parent_account_code: null, is_control_account: true, subledger_source: 'AP', effective_from: '2026-01-01', effective_to: null, ingested_at: '2026-04-01' }
+      - input: ref('tolerance_rules')
+        rows:
+          - { account_code: '2000',     amount_tolerance_usd: 0.05, timing_tolerance_days: 1, fx_tolerance_pct: 0.001 }
+          - { account_code: 'DEFAULT',  amount_tolerance_usd: 0.01, timing_tolerance_days: 0, fx_tolerance_pct: 0 }
+      - input: ref('materiality')
+        rows:
+          - { account_code: '2000',    materiality_usd: 500,  severity: 'HIGH' }
+          - { account_code: 'DEFAULT', materiality_usd: 1000, severity: 'LOW'  }
+    expect:
+      rows:
+        - { entity_id: 1, account_code: '2000', posting_date: '2026-04-01', variance_usd: 1000, status: 'FAIL' }
+
+# ==============================================================================
+# Exposures -- link the recon marts to the downstream Streamlit dashboard
+# so `dbt docs` shows the full lineage from raw -> mart -> consumer.
+# ==============================================================================
+exposures:
+  - name: streamlit_recon_cockpit
+    type: dashboard
+    maturity: medium
+    url: http://localhost:8501
+    description: |
+      The Streamlit Recon Cockpit. 4 pages: Scorecard, Break Detail,
+      Aging, and Auditor Evidence pack export.
+    owner:
+      name: Vijaya Supreetha Gurrala
+      email: supreethagurrala@gmail.com
+    depends_on:
+      - ref('recon_summary')
+      - ref('recon_control_account')
+      - ref('recon_transaction_level')
+      - ref('recon_aging')
+      - ref('recon_variance_analysis')
+      - ref('recon_manual_je_flag')
+
+  - name: auditor_evidence_pack
+    type: analysis
+    maturity: medium
+    description: "PDF/Excel evidence pack consumed by external auditors during quarterly reviews."
+    owner:
+      name: Vijaya Supreetha Gurrala
+      email: supreethagurrala@gmail.com
+    depends_on:
+      - ref('recon_summary')
+      - ref('recon_control_account')
+      - ref('recon_manual_je_flag')
+      - ref('recon_suspense_monitor')
